@@ -5,24 +5,22 @@ Core game logic for the Wordle game.
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from utils.word_list import WordList
 
-class LetterResult(Enum):
-    """Possible results for each letter in a guess."""
-    CORRECT = "correct"
-    PRESENT = "present"
-    ABSENT = "absent"
+class LetterState(Enum):
+    """Represents the state of a letter in a guess."""
+    CORRECT = "correct"        # Letter is in correct position
+    PRESENT = "present"        # Letter exists in word but wrong position
+    ABSENT = "absent"          # Letter does not exist in word
 
 @dataclass
 class GuessResult:
-    """Result of a single guess."""
+    """Represents the result of a guess."""
     word: str
-    results: List[LetterResult]
-    is_valid: bool
+    states: List[LetterState]
     is_correct: bool
-    message: Optional[str] = None
 
 class WordleGame:
     """Main game logic for Wordle."""
@@ -46,71 +44,57 @@ class WordleGame:
             return self.word_list.get_daily_word(seed)
         return self.word_list.get_random_word()
     
-    def make_guess(self, guess: str) -> GuessResult:
-        """Process a guess and return the result."""
-        guess = guess.lower()
+    def make_guess(self, guess: str) -> Optional[GuessResult]:
+        """
+        Make a guess and return the result.
         
-        # Validate the guess
+        Args:
+            guess: The word being guessed
+            
+        Returns:
+            GuessResult object containing the evaluation of the guess
+            None if the game is over or guess is invalid
+        """
+        if len(self.attempts) >= self.MAX_ATTEMPTS or self.is_finished:
+            return None
+            
+        guess = guess.lower()
         if len(guess) != self.WORD_LENGTH:
-            return GuessResult(
-                word=guess,
-                results=[],
-                is_valid=False,
-                is_correct=False,
-                message=f"Guess must be {self.WORD_LENGTH} letters long"
-            )
+            return None
             
         if not self.word_list.is_valid_word(guess):
-            return GuessResult(
-                word=guess,
-                results=[],
-                is_valid=False,
-                is_correct=False,
-                message="Not in word list"
-            )
+            return None
             
         if self.config.hard_mode and self.attempts:
             if not self._is_valid_hard_mode_guess(guess):
-                return GuessResult(
-                    word=guess,
-                    results=[],
-                    is_valid=False,
-                    is_correct=False,
-                    message="Must use revealed hints in hard mode"
-                )
+                return None
         
-        # Process the guess
-        results = []
-        target_chars = list(self.target_word)
-        guess_chars = list(guess)
+        # Evaluate each letter
+        states: List[LetterState] = []
+        remaining_letters = list(self.target_word)
         
-        # First pass: find correct letters
-        for i, (guess_char, target_char) in enumerate(zip(guess_chars, target_chars)):
-            if guess_char == target_char:
-                results.append(LetterResult.CORRECT)
-                target_chars[i] = None  # Mark as used
+        # First pass: Find correct letters
+        for guess_letter, word_letter in zip(guess, self.target_word):
+            if guess_letter == word_letter:
+                states.append(LetterState.CORRECT)
+                remaining_letters.remove(guess_letter)
             else:
-                results.append(None)
+                states.append(LetterState.ABSENT)
         
-        # Second pass: find present letters
-        for i, (guess_char, result) in enumerate(zip(guess_chars, results)):
-            if result is None:
-                if guess_char in target_chars:
-                    results[i] = LetterResult.PRESENT
-                    target_chars[target_chars.index(guess_char)] = None
-                else:
-                    results[i] = LetterResult.ABSENT
+        # Second pass: Find present letters
+        for i, (guess_letter, state) in enumerate(zip(guess, states)):
+            if state == LetterState.ABSENT and guess_letter in remaining_letters:
+                states[i] = LetterState.PRESENT
+                remaining_letters.remove(guess_letter)
         
         result = GuessResult(
             word=guess,
-            results=results,
-            is_valid=True,
-            is_correct=guess == self.target_word
+            states=states,
+            is_correct=all(state == LetterState.CORRECT for state in states)
         )
         
         self.attempts.append(result)
-        self._update_game_state(result)
-        
+        self.is_finished = result.is_correct or len(self.attempts) >= self.MAX_ATTEMPTS
         return result
     
     def _is_valid_hard_mode_guess(self, guess: str) -> bool:
@@ -118,17 +102,12 @@ class WordleGame:
         last_result = self.attempts[-1]
         guess_chars = list(guess)
         
-        for i, (result, prev_char) in enumerate(zip(last_result.results, last_result.word)):
-            if result == LetterResult.CORRECT and guess_chars[i] != prev_char:
+        for i, (result, prev_char) in enumerate(zip(last_result.states, self.target_word)):
+            if result == LetterState.CORRECT and guess_chars[i] != prev_char:
                 return False
-            if result == LetterResult.PRESENT and prev_char not in guess:
+            if result == LetterState.PRESENT and prev_char not in guess:
                 return False
         return True
-    
-    def _update_game_state(self, result: GuessResult) -> None:
-        """Update the game state after a guess."""
-        if result.is_correct or len(self.attempts) >= self.MAX_ATTEMPTS:
-            self.is_finished = True
     
     @property
     def board(self) -> List[GuessResult]:
@@ -142,4 +121,23 @@ class WordleGame:
             "won": any(attempt.is_correct for attempt in self.attempts),
             "attempts": len(self.attempts),
             "target_word": self.target_word if self.is_finished else None
-        } 
+        }
+    
+    @property
+    def game_over(self) -> bool:
+        """Check if the game is over."""
+        return self.is_finished
+    
+    @property
+    def remaining_attempts(self) -> int:
+        """Get the number of remaining attempts."""
+        return self.MAX_ATTEMPTS - len(self.attempts)
+    
+    def get_game_state(self) -> Tuple[bool, bool, int]:
+        """
+        Get the current game state.
+        
+        Returns:
+            Tuple of (is_game_over, is_won, remaining_attempts)
+        """
+        return (self.game_over, any(attempt.is_correct for attempt in self.attempts), self.remaining_attempts) 
